@@ -1,70 +1,27 @@
-# This is the main desktop application release workflow for both nightly and beta/stable releases.
+# This workflow builds desktop release artifacts from the current branch and
+# publishes them to the dedicated update-testing repository.
 
 name: Build-Desktop-Release
 
 on:
   workflow_dispatch:
-    inputs:
-      build-target:
-        description: 'Build Target (Release Type)'
-        type: choice
-        required: true
-        options:
-          - beta
-          - nightly
-          - non-release
-        default: "non-release"
-      git-ref:
-        description: "Release Git Ref (Which branch or tag to build?)"
-        required: true
-        default: "master"
-      is-draft:
-        description: 'Draft Release? (Beta only, Nightly will always be a non-draft)'
-        type: boolean
-        required: true
-        default: true
-      is-pre-release:
-        description: 'Pre Release? (labeled as "PreRelease")'
-        type: boolean
-        required: true
-        default: true
-      enable-file-sync-production:
-        description: 'File sync production mode'
-        type: boolean
-        required: true
-        default: true
-      enable-plugins:
-        description: 'Build with plugin system support'
-        type: boolean
-        required: true
-        default: true
-      build-android:
-        description: 'Build Android App'
-        type: boolean
-        required: true
-        default: true
-  # schedule: # Every workday at the 2 P.M. (UTC) we run a scheduled nightly build
-  #   - cron: '0 14 * * MON-FRI'
 
 env:
   CLOJURE_VERSION: '1.12.4.1618'
   NODE_VERSION: '24'
   JAVA_VERSION: '21'
+  TEST_RELEASE_REPOSITORY: 'megayu/test-app-releases'
+  ENABLE_PLUGINS: 'true'
+  ENABLE_FILE_SYNC_PRODUCTION: 'true'
 
 jobs:
   compile-cljs:
     runs-on: ubuntu-22.04
     steps:
-      - name: Check build options
-        if: ${{ github.event_name == 'workflow_dispatch' && (github.event.inputs.build-target == 'nightly' || github.event.inputs.build-target == 'beta') && github.event.inputs.git-ref != 'master' }}
-        run: |
-          echo "::error title=CheckFail::Nightly and Beta Release MUST be built from master"
-          exit 1
-
       - name: Check out Git repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.git-ref }}
+          ref: refactor/electron-builder-update-test
 
       - name: Install Node.js, NPM and Yarn
         uses: actions/setup-node@v4
@@ -77,7 +34,6 @@ jobs:
 
       - name: Cache yarn cache directory
         uses: actions/cache@v4
-        id: yarn-cache
         with:
           path: ${{ steps.yarn-cache-dir-path.outputs.dir }}
           key: ${{ runner.os }}-yarn-${{ hashFiles('**/yarn.lock') }}
@@ -103,67 +59,30 @@ jobs:
         with:
           cli: ${{ env.CLOJURE_VERSION }}
 
-      - name: Retrieve tag version
+      - name: Retrieve release version
         id: ref
         run: |
-          pkgver=$(node ./scripts/get-pkg-version.js "${{ github.event.inputs.build-target }}")
+          pkgver=$(node ./scripts/get-pkg-version.js stable)
           echo "version=$pkgver" >> $GITHUB_OUTPUT
 
-      - name: Do Not Overwrite Existing Release
-        if: ${{ github.event.inputs.build-target == 'beta' }}
+      - name: Do Not Overwrite Existing Test Release
         run: |
-          if curl -f "https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ steps.ref.outputs.version }}" &>/dev/null; then
-            echo "::error title=CheckFail::Release already exists"
+          if curl -f "https://api.github.com/repos/${{ env.TEST_RELEASE_REPOSITORY }}/releases/tags/${{ steps.ref.outputs.version }}" &>/dev/null; then
+            echo "::error title=CheckFail::Test release already exists"
             exit 1
           fi
 
-      - name: Update Nightly APP Version
-        if: ${{ github.event.inputs.build-target == 'nightly' || github.event_name == 'schedule' }}
-        run: |
-          sed -i 's/defonce version ".*"/defonce version "${{ steps.ref.outputs.version }}"/g' src/main/frontend/version.cljs
-
-      - name: Set Build Environment Variables (only when workflow_dispatch)
-        if: ${{ github.event_name == 'workflow_dispatch' }}
-        # if scheduled, use default settings
-        run: |
-          echo "ENABLE_PLUGINS=${{ github.event_name == 'schedule' || github.event.inputs.enable-plugins == 'true' }}" >> $GITHUB_ENV
-          echo "ENABLE_FILE_SYNC_PRODUCTION=${{ github.event_name == 'schedule' || github.event.inputs.enable-file-sync-production == 'true' }}" >> $GITHUB_ENV
-
       - name: Compile CLJS
         run: yarn install && gulp build && yarn cljs:release-electron && yarn webpack-app-build
-        env:
-          LOGSEQ_SENTRY_DSN: ${{ secrets.LOGSEQ_SENTRY_DSN }}
-          LOGSEQ_POSTHOG_TOKEN: ${{ secrets.LOGSEQ_POSTHOG_TOKEN }}
 
       - name: Update APP Version
         run: |
-          sed -i 's/"version": "0.0.1"/"version": "${{ steps.ref.outputs.version }}"/g' ./package.json
-        working-directory: ./static
-
-      - name: Display Package.json
-        run: cat ./package.json
+          node -e "const fs=require('fs'); const pkg=JSON.parse(fs.readFileSync('./package.json','utf8')); pkg.version='${{ steps.ref.outputs.version }}'; fs.writeFileSync('./package.json', JSON.stringify(pkg, null, 2) + '\n')"
         working-directory: ./static
 
       - name: Save VERSION file
         run: echo "${{ steps.ref.outputs.version }}" > ./VERSION
         working-directory: ./static
-
-      - name: List Files
-        run: ls -al
-        working-directory: ./static
-
-      - name: Upload Sentry Sourcemaps (beta only)
-        # if: ${{ github.repository == 'logseq/logseq' && github.event_name == 'workflow_dispatch' && github.event.inputs.build-target == 'beta' }}
-        run: |
-          curl -sL https://sentry.io/get-cli/ | SENTRY_CLI_VERSION=2.58.4 bash
-          release_name="logseq@${{ steps.ref.outputs.version }}"
-          sentry-cli releases new "${release_name}"
-          sentry-cli releases files "${release_name}" upload-sourcemaps --ext map --ext js ./static/js --url-prefix '~/static/js'
-          sentry-cli releases finalize "${release_name}"
-        env:
-          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          SENTRY_ORG: logseq
-          SENTRY_PROJECT: logseq
 
       - name: Cache Static File
         uses: actions/upload-artifact@v4
@@ -192,21 +111,13 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      # - name: Cache Node Modules
-      #   uses: actions/cache@v4
-      #   with:
-      #     path: |
-      #       **/node_modules
-      #     key: ${{ runner.os }}-node-modules
-
-      - name: Build/Release Electron App
-        run: yarn install && yarn electron:make
+      - name: Build Electron App
+        run: yarn install && yarn electron:make:test
         working-directory: ./static
 
       - name: Save artifacts
         run: |
           mkdir -p builds
-          # NOTE: save VERSION file to builds directory
           cp static/VERSION ./builds/VERSION
           mv static/dist/*.AppImage       ./builds/Logseq-linux-x64-${{ steps.ref.outputs.version }}.AppImage
           mv static/dist/*.blockmap       ./builds/
@@ -247,14 +158,13 @@ jobs:
           yarn install --target_arch=arm64 --target_platform=linux
         working-directory: ./static
 
-      - name: Build/Release Electron App
-        run: yarn electron:make-linux-arm64
+      - name: Build Electron App
+        run: yarn electron:make-linux-arm64:test
         working-directory: ./static
 
       - name: Save artifacts
         run: |
           mkdir -p builds
-          # NOTE: save VERSION file to builds directory
           cp static/VERSION ./builds/VERSION
           mv static/dist/*.AppImage             ./builds/Logseq-linux-arm64-${{ steps.ref.outputs.version }}.AppImage
           mv static/dist/*.blockmap             ./builds/
@@ -286,19 +196,12 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      # - name: Cache Node Modules
-      #   uses: actions/cache@v4
-      #   with:
-      #    path: |
-      #      **/node_modules
-      #    key: ${{ runner.os }}-node-modules
-
       - name: Deps Electron app
         run: yarn install
         working-directory: ./static
 
-      - name: Build/Release Electron app
-        run: yarn electron:make
+      - name: Build Electron app
+        run: yarn electron:make:test
         working-directory: ./static
 
       - name: Save Artifact
@@ -349,19 +252,12 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      # - name: Cache Node Modules
-      #   uses: actions/cache@v4
-      #   with:
-      #    path: |
-      #      **/node_modules
-      #    key: ${{ runner.os }}-node-modules
-
       - name: Deps Electron app
         run: yarn install
         working-directory: ./static
 
-      - name: Build/Release Electron app
-        run: yarn electron:make-win-arm64
+      - name: Build Electron app
+        run: yarn electron:make-win-arm64:test
         working-directory: ./static
 
       - name: Save Artifact
@@ -409,9 +305,6 @@ jobs:
           pkgver=$(cat ./static/VERSION)
           echo "version=$pkgver" >> $GITHUB_OUTPUT
 
-      - name: List Static Files
-        run: ls -al ./static
-
       - name: Install Node.js, NPM and Yarn
         uses: actions/setup-node@v4
         with:
@@ -428,29 +321,21 @@ jobs:
 
       - name: Cache yarn cache directory
         uses: actions/cache@v4
-        id: yarn-cache
         with:
           path: ${{ steps.yarn-cache-dir-path.outputs.dir }}
           key: ${{ runner.os }}-yarn-${{ hashFiles('**/yarn.lock') }}
           restore-keys: |
             ${{ runner.os }}-yarn-
 
+      # Signed macOS builds are required for end-to-end auto-update validation.
       - name: Signing By Apple Developer ID
-        if: ${{ github.repository == 'logseq/logseq' }}
         uses: apple-actions/import-codesign-certs@v1
         with:
           p12-file-base64: ${{ secrets.APPLE_CERTIFICATES_P12 }}
           p12-password: ${{ secrets.APPLE_CERTIFICATES_P12_PASSWORD }}
 
-      # - name: Cache Node Modules
-      #   uses: actions/cache@v4
-      #   with:
-      #     path: |
-      #       **/node_modules
-      #     key: ${{ runner.os }}-node-modules
-
-      - name: Build/Release Electron App for x64
-        run: yarn install && yarn rebuild:all && yarn electron:make
+      - name: Build Electron App for x64
+        run: yarn install && yarn rebuild:all && yarn electron:make:test
         working-directory: ./static
         env:
           APPLE_ID: ${{ secrets.APPLE_ID_EMAIL }}
@@ -460,6 +345,7 @@ jobs:
       - name: Save x64 artifacts
         run: |
           mkdir -p builds
+          cp static/VERSION ./builds/VERSION
           mv static/dist/*.dmg           ./builds/Logseq-darwin-x64-${{ steps.ref.outputs.version }}.dmg
           mv static/dist/*.zip           ./builds/Logseq-darwin-x64-${{ steps.ref.outputs.version }}.zip
           mv static/dist/*.blockmap      ./builds/
@@ -498,7 +384,6 @@ jobs:
 
       - name: Cache yarn cache directory
         uses: actions/cache@v4
-        id: yarn-cache
         with:
           path: ${{ steps.yarn-cache-dir-path.outputs.dir }}
           key: ${{ runner.os }}-arm64-yarn-${{ hashFiles('**/yarn.lock') }}
@@ -510,26 +395,19 @@ jobs:
         with:
           python-version: '3.11'
 
+      # Signed macOS builds are required for end-to-end auto-update validation.
       - name: Signing By Apple Developer ID
-        if: ${{ github.repository == 'logseq/logseq' }}
         uses: apple-actions/import-codesign-certs@v1
         with:
           p12-file-base64: ${{ secrets.APPLE_CERTIFICATES_P12 }}
           p12-password: ${{ secrets.APPLE_CERTIFICATES_P12_PASSWORD }}
 
-      # - name: Cache Node Modules
-      #   uses: actions/cache@v4
-      #   with:
-      #     path: |
-      #       **/node_modules
-      #     key: ${{ runner.os }}-node-modules
-
       - name: Fetch deps
         run: yarn install --ignore-platform && yarn rebuild:all
         working-directory: ./static
 
-      - name: Build/Release Electron App for arm64
-        run: yarn electron:make-macos-arm64
+      - name: Build Electron App for arm64
+        run: yarn electron:make-macos-arm64:test
         working-directory: ./static
         env:
           APPLE_ID: ${{ secrets.APPLE_ID_EMAIL }}
@@ -539,6 +417,7 @@ jobs:
       - name: Save arm64 artifacts
         run: |
           mkdir -p builds
+          cp static/VERSION ./builds/VERSION
           mv static/dist/*.dmg           ./builds/Logseq-darwin-arm64-${{ steps.ref.outputs.version }}.dmg
           mv static/dist/*.zip           ./builds/Logseq-darwin-arm64-${{ steps.ref.outputs.version }}.zip
           mv static/dist/*.blockmap      ./builds/
@@ -550,21 +429,7 @@ jobs:
           name: logseq-darwin-arm64-builds
           path: builds
 
-  # reuse workflow via workflow_call
-  build-android:
-    uses: ./.github/workflows/build-android.yml
-    if: ${{ github.event_name == 'schedule' || github.event.inputs.build-android == 'true' }}
-    with:
-      build-target: "${{ github.event.inputs.build-target }}"
-      # if scheduled, use production mode
-      enable-file-sync-production: "${{ github.event_name == 'schedule' || github.event.inputs.enable-file-sync-production == 'true' }}"
-    secrets:
-      ANDROID_KEYSTORE: "${{ secrets.ANDROID_KEYSTORE }}"
-      ANDROID_KEYSTORE_PASSWORD: "${{ secrets.ANDROID_KEYSTORE_PASSWORD }}"
-      SENTRY_AUTH_TOKEN: "${{ secrets.SENTRY_AUTH_TOKEN }}"
-
-  nightly-release:
-    if: ${{ github.event_name == 'schedule' || github.event.inputs.build-target == 'nightly' }}
+  release:
     needs: [ build-macos-x64, build-macos-arm64, build-linux-x64, build-linux-arm64, build-windows-x64, build-windows-arm64 ]
     runs-on: ubuntu-22.04
     steps:
@@ -604,97 +469,6 @@ jobs:
           name: logseq-win-arm64-builds
           path: ./
 
-      - name: Download Android Artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: logseq-android-builds
-          path: ./
-
-      - name: Generate SHA256 checksums
-        run: |
-          sha256sum *-darwin-* > SHA256SUMS.txt
-          sha256sum *-win-* >> SHA256SUMS.txt
-          sha256sum *-linux-* >> SHA256SUMS.txt
-          sha256sum *.apk >> SHA256SUMS.txt
-          cat SHA256SUMS.txt
-
-      - name: List files
-        run: ls -rl
-
-      - name: Update Nightly Release
-        uses: andelf/nightly-release@main
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: nightly
-          name: 'Desktop app Nightly Release $$'
-          draft: false
-          prerelease: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.is-pre-release) || (github.event_name == 'schedule')}}
-          body: |
-            This is a nightly release of the Logseq desktop app.
-            It's unstable compared to the official releases, **use it with caution**!
-          files: |
-            ./SHA256SUMS.txt
-            ./*.zip
-            ./*.dmg
-            ./*.exe
-            ./*.yml
-            ./*.blockmap
-            ./*.AppImage
-            ./*.apk
-
-  release:
-    # NOTE: For now, we only have beta channel to be released on Github
-    if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.build-target == 'beta' }}
-    needs: [ build-macos-x64, build-macos-arm64, build-linux-x64, build-linux-arm64, build-windows-x64, build-windows-arm64 ]
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Download MacOS x64 Artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: logseq-darwin-x64-builds
-          path: ./
-
-      - name: Download MacOS arm64 Artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: logseq-darwin-arm64-builds
-          path: ./
-
-      - name: Download The Linux x64 Artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: logseq-linux-x64-builds
-          path: ./
-
-      - name: Download The Linux arm64 Artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: logseq-linux-arm64-builds
-          path: ./
-
-      - name: Download The Windows Artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: logseq-win-x64-builds
-          path: ./
-
-      - name: Download The Windows Artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: logseq-win-arm64-builds
-          path: ./
-
-      - name: Download Android Artifacts
-        uses: actions/download-artifact@v4
-        if: ${{ github.event_name == 'schedule' || github.event.inputs.build-android == 'true' }}
-        with:
-          name: logseq-android-builds
-          path: ./
-
-      - name: List files
-        run: ls -rl
-
       - name: Retrieve tag version
         id: ref
         run: |
@@ -706,19 +480,22 @@ jobs:
           sha256sum *-darwin-* > SHA256SUMS.txt
           sha256sum *-win-* >> SHA256SUMS.txt
           sha256sum *-linux-* >> SHA256SUMS.txt
-          sha256sum *.apk >> SHA256SUMS.txt
           cat SHA256SUMS.txt
 
-      - name: Create Release Draft
+      - name: List files
+        run: ls -rl
+
+      - name: Create Test Release
         uses: softprops/action-gh-release@v1
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.TEST_REPOSITORY_TOKEN }}
         with:
+          repository: ${{ env.TEST_RELEASE_REPOSITORY }}
           tag_name: ${{ steps.ref.outputs.version }}
-          name: Desktop APP ${{ steps.ref.outputs.version }} (Beta Testing)
-          body: "TODO: Fill this changelog. Sorry for the inconvenience!"
-          draft: ${{ github.event.inputs.is-draft }}
-          prerelease: ${{ github.event.inputs.is-pre-release }}
+          name: Desktop APP ${{ steps.ref.outputs.version }} (Test Release)
+          body: Automated desktop release for update validation.
+          draft: false
+          prerelease: false
           files: |
             ./VERSION
             ./SHA256SUMS.txt
@@ -728,4 +505,3 @@ jobs:
             ./*.yml
             ./*.blockmap
             ./*.AppImage
-            ./*.apk
