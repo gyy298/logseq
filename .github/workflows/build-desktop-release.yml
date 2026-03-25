@@ -120,7 +120,11 @@ jobs:
           mkdir -p builds
           cp static/VERSION ./builds/VERSION
           mv static/dist/*.AppImage       ./builds/Logseq-linux-x64-${{ steps.ref.outputs.version }}.AppImage
-          mv static/dist/*.blockmap       ./builds/
+          shopt -s nullglob
+          blockmaps=(static/dist/*.blockmap)
+          if [ ${#blockmaps[@]} -gt 0 ]; then
+            mv static/dist/*.blockmap ./builds/
+          fi
           mv static/dist/latest-linux.yml ./builds/latest-linux.yml
           mv static/dist/*.zip            ./builds/Logseq-linux-x64-${{ steps.ref.outputs.version }}.zip
 
@@ -167,7 +171,11 @@ jobs:
           mkdir -p builds
           cp static/VERSION ./builds/VERSION
           mv static/dist/*.AppImage             ./builds/Logseq-linux-arm64-${{ steps.ref.outputs.version }}.AppImage
-          mv static/dist/*.blockmap             ./builds/
+          shopt -s nullglob
+          blockmaps=(static/dist/*.blockmap)
+          if [ ${#blockmaps[@]} -gt 0 ]; then
+            mv static/dist/*.blockmap ./builds/
+          fi
           mv static/dist/latest-linux-arm64.yml ./builds/latest-linux-arm64.yml
           mv static/dist/*.zip                  ./builds/Logseq-linux-arm64-${{ steps.ref.outputs.version }}.zip
 
