@@ -119,7 +119,7 @@ jobs:
         run: |
           mkdir -p builds
           cp static/VERSION ./builds/VERSION
-          mv static/dist/*.AppImage       ./builds/Logseq-linux-x64-${{ steps.ref.outputs.version }}.AppImage
+          mv static/dist/*.AppImage       ./builds/
           shopt -s nullglob
           blockmaps=(static/dist/*.blockmap)
           if [ ${#blockmaps[@]} -gt 0 ]; then
@@ -211,6 +211,10 @@ jobs:
       - name: Build Electron app
         run: yarn electron:make:test
         working-directory: ./static
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
 
       - name: Save Artifact
         run: |
@@ -219,21 +223,6 @@ jobs:
           mv static\dist\*.blockmap   builds\
           mv static\dist\latest.yml   builds\latest-x64.yml
           mv static\dist\*.zip        builds\Logseq-win-x64-${{ steps.ref.outputs.version }}.zip
-
-      - name: Sign
-        uses: azure/trusted-signing-action@v0.5.9
-        with:
-          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
-          endpoint: https://eus.codesigning.azure.net/
-          trusted-signing-account-name: logseqwin
-          certificate-profile-name: Logseq
-          files-folder: builds
-          files-folder-filter: exe
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
@@ -267,6 +256,10 @@ jobs:
       - name: Build Electron app
         run: yarn electron:make-win-arm64:test
         working-directory: ./static
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
 
       - name: Save Artifact
         run: |
@@ -275,21 +268,6 @@ jobs:
           mv static\dist\*.blockmap   builds\
           mv static\dist\latest.yml   builds\latest-arm64.yml
           mv static\dist\*.zip        builds\Logseq-win-arm64-${{ steps.ref.outputs.version }}.zip
-
-      - name: Sign
-        uses: azure/trusted-signing-action@v0.5.9
-        with:
-          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
-          endpoint: https://eus.codesigning.azure.net/
-          trusted-signing-account-name: logseqwin
-          certificate-profile-name: Logseq
-          files-folder: builds
-          files-folder-filter: exe
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
